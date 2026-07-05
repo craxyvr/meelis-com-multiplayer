@@ -1,0 +1,13 @@
+{
+  "name": "meelis-com-multiplayer",
+  "version": "1.0.0",
+  "description": "Meelis.Com — multiplayer server for Render",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.4"
+  }
+}
