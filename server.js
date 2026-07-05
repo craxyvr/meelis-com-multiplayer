@@ -9,6 +9,7 @@ const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3000;
 
 app.use(express.static(__dirname));
+app.get('/', (req, res) => res.sendFile(__dirname + '/meelis_com_oliver_peil_files_v2.html'));
 
 const DEFAULT_FILES = {
   "oliver": "Oliver Peil Files — Fiction Archive\n\nOliver Peil is a fictional character from the Meelis.Com universe. The archive says Oliver grew up with very little money, and his parents also had a hard time. When he got older, the lore says he moved to a secret street when he was 5 years old.\n\nThere he dropped a legendary joke song called \"Onga Bonga Shakaday.\" The song did extremely well in the archive: 5 views and 1 like. Oliver was very happy about this.\n\nLater, Edvyn Kaevats brought Oliver to a dramatic cartoon-style court case and said the song sounded suspicious. In the Meelis.Com lore, Edvyn won the case.\n\nOliver is written as a chaotic character: messy, weird, and always causing trouble. One legend says he scared everyone away from a backyard hangout with his terrible smell. Other names in the file are treated as story nicknames and secret code names.\n\nHow did Oliver become like this? The archive says nobody really knows. The answer is still classified.",
