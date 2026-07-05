@@ -17,6 +17,8 @@ const DEFAULT_FILES = {
   "kaevats": "Kaevats Files — Protected Dossier\n\nEdvyn Kaevats is a strategic commander from Suur Jahu. The classified archive says he is known for stopping a MIRV missile attack at Kaevatsi Laid, a small but important island.\n\nAfter the war, he became a local leader in the rebuilding efforts. His current status is unknown.\n\nDetails of his operations remain classified until the release timer ends."
 };
 
+const chatHistory = [];
+
 const state = {
   files: JSON.parse(JSON.stringify(DEFAULT_FILES)),
   accounts: {},
@@ -32,9 +34,118 @@ function addLog(user, message) {
   if (state.logs.length > 120) state.logs.length = 120;
 }
 
+const gameRooms = {};
+function genId(){return Math.random().toString(36).substring(2,6).toUpperCase()}
+function initGame(type){
+  switch(type){
+    case 'tictactoe': return {board:Array(9).fill(null),turn:0,winner:null,cats:false};
+    case 'connect4': return {board:Array.from({length:6},()=>Array(7).fill(null)),turn:0,winner:null};
+    case 'rps': return {p1:null,p2:null,round:0,wins:[0,0],done:false};
+    case 'numberguess': return {target:Math.floor(Math.random()*100)+1,guesses:[],turn:0,winner:null};
+    case 'conquest': return {grid:Array.from({length:5},()=>Array(5).fill(-1)),turn:0,scores:[0,0],winner:null};
+  }
+}
+function checkGameWin(room){
+  const g=room.state;
+  if(room.type==='tictactoe'){
+    const w=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+    for(const [a,b,c] of w)if(g.board[a]&&g.board[a]===g.board[b]&&g.board[a]===g.board[c])return g.board[a];
+    if(g.board.every(x=>x))return 'cats';
+  }
+  if(room.type==='connect4'){
+    for(let r=0;r<6;r++)for(let c=0;c<7;c++){
+      const p=g.board[r][c];if(!p)continue;
+      if(c+3<7&&p===g.board[r][c+1]&&p===g.board[r][c+2]&&p===g.board[r][c+3])return p;
+      if(r+3<6&&p===g.board[r+1][c]&&p===g.board[r+2][c]&&p===g.board[r+3][c])return p;
+      if(r+3<6&&c+3<7&&p===g.board[r+1][c+1]&&p===g.board[r+2][c+2]&&p===g.board[r+3][c+3])return p;
+      if(r+3<6&&c-3>=0&&p===g.board[r+1][c-1]&&p===g.board[r+2][c-2]&&p===g.board[r+3][c-3])return p;
+    }
+  }
+  if(room.type==='conquest'){
+    if(g.scores[0]+g.scores[1]===25)return g.scores[0]>g.scores[1]?0:1;
+  }
+  return null;
+}
+
 io.on('connection', (socket) => {
   let currentUser = 'guest';
-  socket.emit('init', { files: state.files, accounts: state.accounts, news: state.news, scores: state.scores, missions: state.missions, treaty: state.treaty, logs: state.logs });
+  socket.emit('init', { files: state.files, accounts: state.accounts, news: state.news, scores: state.scores, missions: state.missions, treaty: state.treaty, logs: state.logs, chat: chatHistory.slice(-50) });
+
+  socket.on('findGame', ({ type }) => {
+    let room = Object.values(gameRooms).find(r => r.type === type && r.players.length === 1 && !r.players.includes(socket.id));
+    if (!room) {
+      const id = genId();
+      room = { id, type, players: [socket.id], state: initGame(type), ready: 0 };
+      gameRooms[id] = room;
+      socket.emit('gameCreated', { roomId: id, player: 0 });
+    } else {
+      room.players.push(socket.id);
+      room.state.turn = 0;
+      socket.emit('gameCreated', { roomId: room.id, player: 1 });
+      io.to(room.players[0]).to(room.players[1]).emit('gameStart', { roomId: room.id, state: room.state });
+      socket.to(room.players[0]).emit('gameStart', { roomId: room.id, state: room.state });
+    }
+    socket.join(room.id);
+  });
+
+  socket.on('gameMove', ({ roomId, move }) => {
+    const room = gameRooms[roomId];
+    if (!room) return;
+    const pi = room.players.indexOf(socket.id);
+    if (pi === -1 || pi !== room.state.turn) return;
+    const g = room.state;
+    if (room.type === 'tictactoe') {
+      if (g.board[move] !== null) return;
+      g.board[move] = pi === 0 ? 'X' : 'O';
+      g.turn = 1 - g.turn;
+    } else if (room.type === 'connect4') {
+      let col = move;
+      for (let r = 5; r >= 0; r--) {
+        if (g.board[r][col] === null) { g.board[r][col] = pi === 0 ? 'R' : 'Y'; break; }
+      }
+      g.turn = 1 - g.turn;
+    } else if (room.type === 'rps') {
+      if (pi === 0) g.p1 = move;
+      else g.p2 = move;
+      if (g.p1 && g.p2) {
+        const w = g.p1 === g.p2 ? -1 : (g.p1==='rock'?g.p2==='scissors'?0:1:g.p1==='paper'?g.p2==='rock'?0:1:g.p2==='paper'?0:1);
+        if (w >= 0) g.wins[w]++;
+        g.round++;
+        if (g.wins[0] >= 2 || g.wins[1] >= 2) g.done = true;
+        else { g.p1 = null; g.p2 = null; }
+      }
+    } else if (room.type === 'numberguess') {
+      g.guesses.push({ player: pi, guess: move });
+      if (g.guesses.length % 2 === 0) {
+        const p1g = g.guesses[g.guesses.length - 2].guess;
+        const p2g = g.guesses[g.guesses.length - 1].guess;
+        const d1 = Math.abs(p1g - g.target);
+        const d2 = Math.abs(p2g - g.target);
+        if (d1 < d2) g.winner = 0; else if (d2 < d1) g.winner = 1; else g.winner = -1;
+      }
+    } else if (room.type === 'conquest') {
+      const [r, c] = move;
+      if (g.grid[r][c] !== -1) return;
+      g.grid[r][c] = pi;
+      g.scores[pi]++;
+      g.turn = 1 - g.turn;
+    }
+    const win = checkGameWin(room);
+    if (win !== null) g.winner = win === 'cats' ? -1 : (win === 'X' || win === 'R' || win === 0 ? 0 : 1);
+    io.to(room.id).emit('gameState', { roomId, state: g });
+    if (g.winner !== null) {
+      setTimeout(() => { delete gameRooms[roomId]; io.to(room.id).emit('gameEnd', { roomId }); }, 2000);
+    }
+  });
+
+  socket.on('leaveGame', ({ roomId }) => {
+    const room = gameRooms[roomId];
+    if (!room) return;
+    room.players = room.players.filter(p => p !== socket.id);
+    socket.leave(roomId);
+    if (room.players.length === 0) delete gameRooms[roomId];
+    else io.to(room.id).emit('gameEnd', { roomId });
+  });
 
   socket.on('login', (name) => {
     currentUser = name;
@@ -106,10 +217,36 @@ io.on('connection', (socket) => {
     io.emit('treaty', state.treaty);
   });
 
+  socket.on('chatMessage', (msg) => {
+    const entry = { u: currentUser, msg, t: Date.now() };
+    chatHistory.push(entry);
+    if (chatHistory.length > 100) chatHistory.shift();
+    io.emit('chatMessage', entry);
+  });
+
+  socket.on('radioMessage', (msg) => {
+    addLog(currentUser, 'broadcast: ' + msg);
+    io.emit('radioMessage', { u: currentUser, msg, t: Date.now() });
+  });
+
+  socket.on('log', ({ u, m }) => {
+    addLog(u, m);
+    io.emit('logs', state.logs);
+  });
+
   socket.on('disconnect', () => {
     if (currentUser !== 'guest' && state.accounts[currentUser]) {
       state.accounts[currentUser].lastSeen = 0;
       io.emit('accounts', state.accounts);
+    }
+    for (const roomId in gameRooms) {
+      const room = gameRooms[roomId];
+      if (room.players.includes(socket.id)) {
+        room.players = room.players.filter(p => p !== socket.id);
+        io.to(room.id).emit('gameEnd', { roomId });
+        socket.leave(roomId);
+        if (room.players.length === 0) delete gameRooms[roomId];
+      }
     }
   });
 });
