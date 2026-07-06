@@ -11,6 +11,82 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static(__dirname));
 app.get('/', (req, res) => res.sendFile(__dirname + '/meelis_com_oliver_peil_files_v2.html'));
 
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
+const https = require('https');
+const AI_KEY = process.env.OPENAI_API_KEY || '';
+
+function aiRequest(endpoint, body) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify(body);
+    const opts = {
+      hostname: 'api.openai.com', port: 443, path: endpoint,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AI_KEY, 'Content-Length': Buffer.byteLength(data) }
+    };
+    const req = https.request(opts, res => { let d = ''; res.on('data', c => d += c); res.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(d); } }); });
+    req.on('error', reject); req.write(data); req.end();
+  });
+}
+
+app.post('/api/ai/chat', express.json(), async (req, res) => {
+  if (!AI_KEY) return res.json({ error: 'OpenAI API key not configured. Set OPENAI_API_KEY environment variable.' });
+  try {
+    const r = await aiRequest('/v1/chat/completions', { model: 'gpt-4o-mini', messages: req.body.messages, max_tokens: 500 });
+    res.json({ text: r.choices?.[0]?.message?.content || 'No response' });
+  } catch (e) { res.json({ error: String(e) }); }
+});
+
+app.post('/api/ai/generate-image', express.json(), async (req, res) => {
+  if (!AI_KEY) return res.json({ error: 'OpenAI API key not configured.' });
+  try {
+    const r = await aiRequest('/v1/images/generations', { prompt: req.body.prompt, n: 1, size: '1024x1024' });
+    res.json({ url: r.data?.[0]?.url || '' });
+  } catch (e) { res.json({ error: String(e) }); }
+});
+
+app.post('/api/ai/edit-image', upload.single('image'), async (req, res) => {
+  if (!AI_KEY) return res.json({ error: 'OpenAI API key not configured.' });
+  try {
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('image', req.file.buffer, { filename: 'image.png', contentType: req.file.mimetype });
+    form.append('prompt', req.body.prompt);
+    form.append('n', '1'); form.append('size', '1024x1024');
+    const r = await new Promise((resolve, reject) => {
+      const data = form.getBuffer(); const opts = {
+        hostname: 'api.openai.com', port: 443, path: '/v1/images/edits', method: 'POST',
+        headers: { ...form.getHeaders(), 'Authorization': 'Bearer ' + AI_KEY, 'Content-Length': data.length }
+      };
+      const req2 = https.request(opts, res2 => { let d = ''; res2.on('data', c => d += c); res2.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(d); } }); });
+      req2.on('error', reject); req2.write(data); req2.end();
+    });
+    res.json({ url: r.data?.[0]?.url || '' });
+  } catch (e) { res.json({ error: String(e) }); }
+});
+
+// === CHESS ENGINE ===
+const CHESS = {
+  initBoard() { return [['r','n','b','q','k','b','n','r'],['p','p','p','p','p','p','p','p'],[null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null],[null,null,null,null,null,null,null,null],['P','P','P','P','P','P','P','P'],['R','N','B','Q','K','B','N','R']]; },
+  isW(p){return p&&p===p.toUpperCase()},isB(p){return p&&p===p.toLowerCase()},cl(b){return b.map(r=>[...r])},
+  pMoves(b,r,c,ep){
+    const p=b[r][c];if(!p)return[];const w=this.isW(p),m=[];const t=(tr,tc)=>{if(tr>=0&&tr<8&&tc>=0&&tc<8){const x=b[tr][tc];if(!x||(w?this.isB(x):this.isW(x)))m.push([tr,tc])}};
+    switch(p.toUpperCase()){
+      case'K':for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++)if(dr||dc)t(r+dr,c+dc);break;
+      case'Q':for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++)if(dr||dc)for(let i=1;i<8;i++){const tr=r+dr*i,tc=c+dc*i;if(tr<0||tr>=8||tc<0||tc>=8)break;const x=b[tr][tc];if(!x)m.push([tr,tc]);else{if((w&&this.isB(x))||(!w&&this.isW(x)))m.push([tr,tc]);break}}break;
+      case'R':for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++)if((dr&&!dc)||(!dr&&dc))for(let i=1;i<8;i++){const tr=r+dr*i,tc=c+dc*i;if(tr<0||tr>=8||tc<0||tc>=8)break;const x=b[tr][tc];if(!x)m.push([tr,tc]);else{if((w&&this.isB(x))||(!w&&this.isW(x)))m.push([tr,tc]);break}}break;
+      case'B':for(let dr=-1;dr<=1;dr+=2)for(let dc=-1;dc<=1;dc+=2)for(let i=1;i<8;i++){const tr=r+dr*i,tc=c+dc*i;if(tr<0||tr>=8||tc<0||tc>=8)break;const x=b[tr][tc];if(!x)m.push([tr,tc]);else{if((w&&this.isB(x))||(!w&&this.isW(x)))m.push([tr,tc]);break}}break;
+      case'N':[[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]].forEach(([dr,dc])=>t(r+dr,c+dc));break;
+      case'P':{const d=w?-1:1,sr=w?6:1;if(r+d>=0&&r+d<8&&!b[r+d][c]){m.push([r+d,c]);if(r===sr&&!b[r+2*d][c])m.push([r+2*d,c])}for(const dc of[-1,1]){if(r+d>=0&&r+d<8&&c+dc>=0&&c+dc<8){const x=b[r+d][c+dc];if(x&&(w?this.isB(x):this.isW(x)))m.push([r+d,c+dc])}if(ep&&ep[0]===r+d&&ep[1]===c+dc){const x=b[r][c+dc];if(x&&(w?this.isB(x):this.isW(x)))m.push([r+d,c+dc])}}break}
+    }return m;
+  },
+  isCheck(b,w){const k=w?'K':'k';let kr=-1,kc=-1;for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(b[r][c]===k){kr=r;kc=c;r=8;break}if(kr===-1)return!1;const opp=w?p=>this.isB(p):p=>this.isW(p);for(let r=0;r<8;r++)for(let c=0;c<8;c++){if(!opp(b[r][c]))continue;const mv=this.pMoves(b,r,c);for(const[t]of mv)if(t[0]===kr&&t[1]===kc)return!0}return!1},
+  hasLegal(b,w){for(let r=0;r<8;r++)for(let c=0;c<8;c++){const p=b[r][c];if(!p||(w?this.isB(p):this.isW(p)))continue;const mv=this.pMoves(b,r,c);for(const[tr,tc]of mv){const nb=this.cl(b);nb[tr][tc]=nb[r][c];nb[r][c]=null;if(!this.isCheck(nb,w))return!0}}return!1},
+  doMove(b,fr,fc,tr,tc){const nb=this.cl(b);nb[tr][tc]=nb[fr][fc];nb[fr][fc]=null;const p=nb[tr][tc];if(p&&p.toUpperCase()==='P'&&(tr===0||tr===7))nb[tr][tc]=p==='p'?'q':'Q';return nb},
+  evalBoard(b){const vals={p:-1,n:-3,b:-3.1,r:-5,q:-9,k:-999,P:1,N:3,B:3.1,R:5,Q:9,K:999};let s=0;for(let r=0;r<8;r++)for(let c=0;c<8;c++)if(b[r][c])s+=vals[b[r][c]]||0;return s},
+  copyGame(g){return{board:this.cl(g.board),turn:g.turn,castling:[...g.castling],ep:g.ep?[...g.ep]:null,moves:g.moves,winner:g.winner}}
+};
+
 const DEFAULT_FILES = {
   "oliver": "Oliver Peil Files — Fiction Archive\n\nOliver Peil is a fictional character from the Meelis.Com universe. The archive says Oliver grew up with very little money, and his parents also had a hard time. When he got older, the lore says he moved to a secret street when he was 5 years old.\n\nThere he dropped a legendary joke song called \"Onga Bonga Shakaday.\" The song did extremely well in the archive: 5 views and 1 like. Oliver was very happy about this.\n\nLater, Edvyn Kaevats brought Oliver to a dramatic cartoon-style court case and said the song sounded suspicious. In the Meelis.Com lore, Edvyn won the case.\n\nOliver is written as a chaotic character: messy, weird, and always causing trouble. One legend says he scared everyone away from a backyard hangout with his terrible smell. Other names in the file are treated as story nicknames and secret code names.\n\nHow did Oliver become like this? The archive says nobody really knows. The answer is still classified.",
   "war": "Great War Of Suur Jahu — Improved Archive Text\n\nThe Great War of Suur Jahu began when Meelis started a conflict against Edvyn. At first, Edvyn controlled a powerful country and had an alliance with Vitja. Edvyn sent Vitja to attack Meelis, but the plan changed fast. Vitja and Meelis secretly formed their own alliance and began planning an attack on Edvyn.\n\nEdvyn did not know what was coming. He was not ready when the news broke: Suur Jahu was under attack, and half of the land had already been taken. In the capital, crowds started protesting and demanding a new president. Many people blamed Edvyn for the disaster.\n\nLater, Edvyn gave a huge speech. The speech changed the mood of the capital, and many people started supporting him again. After that, Edvyn went back to his office and tried to relax.\n\nBut then Meelis and Vitja broke into the office. They demanded that Edvyn hand over his land and come with them to jail. Edvyn simply said, \"No.\" Vitja was furious and pushed Edvyn to the ground. Meelis tripped and fell onto a stack of papers. Vitja jumped on top of them and started wrestling.\n\nEdvyn escaped through a hidden bunker entrance beneath the floor. The bunker was full of old war plans. Meelis and Vitja tried to follow but the bunker had counterattacks, and they had to escape.",
@@ -43,6 +119,7 @@ function initGame(type){
     case 'rps': return {p1:null,p2:null,round:0,wins:[0,0],done:false};
     case 'numberguess': return {target:Math.floor(Math.random()*100)+1,guesses:[],turn:0,winner:null};
     case 'conquest': return {grid:Array.from({length:5},()=>Array(5).fill(-1)),turn:0,scores:[0,0],winner:null};
+    case 'chess': return {board:CHESS.initBoard(),turn:0,castling:[1,1,1,1],ep:null,winner:null};
   }
 }
 function checkGameWin(room){
@@ -63,6 +140,10 @@ function checkGameWin(room){
   }
   if(room.type==='conquest'){
     if(g.scores[0]+g.scores[1]===25)return g.scores[0]>g.scores[1]?0:1;
+  }
+  if(room.type==='chess'){
+    const white = g.turn === 0;
+    if(!CHESS.hasLegal(g.board,white))return CHESS.isCheck(g.board,white)?(white?1:0):-1;
   }
   return null;
 }
@@ -123,6 +204,17 @@ io.on('connection', (socket) => {
         const d2 = Math.abs(p2g - g.target);
         if (d1 < d2) g.winner = 0; else if (d2 < d1) g.winner = 1; else g.winner = -1;
       }
+    } else if (room.type === 'chess') {
+      const [fr,fc,tr,tc] = move;
+      const p = g.board[fr][fc];
+      if (!p || (pi === 0 ? CHESS.isB(p) : CHESS.isW(p))) return;
+      const pseudo = CHESS.pMoves(g.board,fr,fc,g.ep);
+      let legal = false;
+      for (const [pr,pc] of pseudo) { if (pr === tr && pc === tc) { legal = true; break; } }
+      if (!legal) return;
+      const nb = CHESS.doMove(g.board,fr,fc,tr,tc);
+      if (CHESS.isCheck(nb, pi === 0 ? false : true)) return;
+      g.board = nb; g.turn = 1 - g.turn;
     } else if (room.type === 'conquest') {
       const [r, c] = move;
       if (g.grid[r][c] !== -1) return;
